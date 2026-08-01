@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>圖片庫</title>
+<style>
+  :root {
+    --bg: #fbfbfa; --card: #fff; --fg: #1c1b19; --muted: #6b6862;
+    --line: #e4e1db; --accent: #b4552d; --chip: #f0ede7;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #171614; --card: #201f1c; --fg: #eceae5; --muted: #9a958c;
+      --line: #33312d; --accent: #e08b5f; --chip: #2b2925;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 15px/1.6 system-ui, -apple-system, "Helvetica Neue", "Noto Sans TC", sans-serif;
+  }
+  header {
+    position: sticky; top: 0; z-index: 10; background: var(--bg);
+    border-bottom: 1px solid var(--line); padding: 14px 20px;
+  }
+  .bar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  h1 { font-size: 17px; margin: 0 12px 0 0; font-weight: 650; letter-spacing: .01em; }
+  input[type=search], select {
+    padding: 7px 11px; border: 1px solid var(--line); border-radius: 7px;
+    background: var(--card); color: var(--fg); font: inherit; font-size: 14px;
+  }
+  input[type=search] { flex: 1; min-width: 180px; }
+  .count { color: var(--muted); font-size: 13px; margin-left: auto; white-space: nowrap; }
+  .tags { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; max-height: 88px; overflow-y: auto; }
+  .tag {
+    border: 1px solid var(--line); background: var(--chip); color: var(--fg);
+    border-radius: 999px; padding: 3px 10px; font-size: 12.5px; cursor: pointer;
+  }
+  .tag[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .tag .n { color: var(--muted); margin-left: 5px; font-variant-numeric: tabular-nums; }
+  .tag[aria-pressed="true"] .n { color: #ffffffbb; }
+  main { padding: 20px; }
+  .grid {
+    display: grid; gap: 16px;
+    grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+    overflow: hidden; display: flex; flex-direction: column;
+  }
+  .thumb {
+    aspect-ratio: 1; display: grid; place-items: center; padding: 12px;
+    background: repeating-conic-gradient(var(--chip) 0 25%, transparent 0 50%) 50%/16px 16px;
+  }
+  .thumb img { max-width: 100%; max-height: 100%; object-fit: contain; }
+  .meta { padding: 9px 11px 11px; border-top: 1px solid var(--line); }
+  .name { font-size: 13px; font-weight: 600; line-height: 1.35; margin-bottom: 5px; }
+  .name a { color: inherit; text-decoration: none; }
+  .name a:hover { color: var(--accent); }
+  .desc { font-size: 11.5px; color: var(--muted); line-height: 1.45; margin-bottom: 6px; }
+  .alt { border-top: 1px dashed var(--line); margin-top: 6px; padding-top: 6px; }
+  .name.alias { font-weight: 500; }
+  .sub { font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .cardtags { margin-top: 6px; display: flex; gap: 4px; flex-wrap: wrap; }
+  .cardtags span {
+    font-size: 11px; background: var(--chip); border-radius: 4px;
+    padding: 1px 6px; cursor: pointer; color: var(--muted);
+  }
+  .cardtags span:hover { color: var(--accent); }
+  .note { padding: 40px 20px; text-align: center; color: var(--muted); }
+  .note code { background: var(--chip); padding: 2px 6px; border-radius: 4px; font-size: 13px; }
+  #more { display: block; margin: 24px auto; padding: 9px 22px; font: inherit;
+          background: var(--card); color: var(--fg); border: 1px solid var(--line);
+          border-radius: 8px; cursor: pointer; }
+</style>
+</head>
+<body>
+<header>
+  <div class="bar">
+    <h1>圖片庫</h1>
+    <input type="search" id="q" placeholder="搜尋名稱或說明…">
+    <select id="sort">
+      <option value="date-desc">公開日期（新→舊）</option>
+      <option value="date-asc">公開日期（舊→新）</option>
+      <option value="name">名稱</option>
+      <option value="size">尺寸（大→小）</option>
+    </select>
+    <select id="mode">
+      <option value="and">標籤：全部符合</option>
+      <option value="or">標籤：任一符合</option>
+    </select>
+    <span class="count" id="count"></span>
+  </div>
+  <div class="tags" id="tags"></div>
+</header>
+
+<main>
+  <div id="app" class="note">載入中…</div>
+  <div class="grid" id="grid"></div>
+  <button id="more" hidden>載入更多</button>
+</main>
+
+<script>
+/*__EMBEDDED_DATA__*/
+
+const PAGE = 120;
+let all = [], view = [], shown = 0, active = new Set();
+
+const $ = id => document.getElementById(id);
+
+function boot(data) {
+  all = data;
+  $("app").hidden = true;
+  renderTags();
+  apply();
+}
+
+function fail(msg) {
+  $("app").innerHTML = msg;
+}
+
+if (window.__IMAGES__) {
+  boot(window.__IMAGES__);
+} else {
+  fetch("images.json")
+    .then(r => { if (!r.ok) throw new Error(r.status); return r.json(); })
+    .then(boot)
+    .catch(() => {
+      fail(`讀不到 <code>images.json</code>。<br><br>
+        用 <code>python -m http.server</code> 在同一個目錄起一個服務再開這一頁，<br>
+        或直接選擇檔案：<br><br>
+        <input type="file" id="pick" accept="application/json">`);
+      $("pick").onchange = e => {
+        const fr = new FileReader();
+        fr.onload = () => boot(JSON.parse(fr.result));
+        fr.readAsText(e.target.files[0]);
+      };
+    });
+}
+
+function renderTags() {
+  const freq = new Map();
+  for (const it of all) for (const t of it.tags || []) freq.set(t, (freq.get(t) || 0) + 1);
+  const sorted = [...freq].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  $("tags").innerHTML = sorted.map(([t, n]) =>
+    `<button class="tag" data-tag="${esc(t)}" aria-pressed="false">${esc(t)}<span class="n">${n}</span></button>`
+  ).join("");
+  $("tags").onclick = e => {
+    const btn = e.target.closest(".tag");
+    if (!btn) return;
+    toggleTag(btn.dataset.tag);
+  };
+}
+
+function toggleTag(tag) {
+  active.has(tag) ? active.delete(tag) : active.add(tag);
+  for (const b of document.querySelectorAll(".tag"))
+    b.setAttribute("aria-pressed", active.has(b.dataset.tag));
+  apply();
+}
+
+function apply() {
+  const q = $("q").value.trim().toLowerCase();
+  const mode = $("mode").value;
+  view = all.filter(it => {
+    if (q) {
+      if (!haystack(it).includes(q)) return false;
+    }
+    if (active.size) {
+      const tags = it.tags || [];
+      const hit = [...active].filter(t => tags.includes(t)).length;
+      if (mode === "and" ? hit !== active.size : hit === 0) return false;
+    }
+    return true;
+  });
+
+  const s = $("sort").value;
+  view.sort((a, b) => {
+    if (s === "name") return firstName(a).localeCompare(firstName(b));
+    if (s === "size") return (b.width || 0) * (b.height || 0) - (a.width || 0) * (a.height || 0);
+    const d = (a.published_at || "").localeCompare(b.published_at || "");
+    return s === "date-asc" ? d : -d;
+  });
+
+  $("count").textContent = `${view.length} / ${all.length} 張`;
+  $("grid").innerHTML = "";
+  shown = 0;
+  more();
+}
+
+function more() {
+  const slice = view.slice(shown, shown + PAGE);
+  $("grid").insertAdjacentHTML("beforeend", slice.map(card).join(""));
+  shown += slice.length;
+  $("more").hidden = shown >= view.length;
+  $("more").textContent = `載入更多（還有 ${view.length - shown} 張）`;
+}
+
+function sources(it) {
+  if (it.sources && it.sources.length) return it.sources;
+  return [{ page_url: it.page_url, name: it.name }];
+}
+function firstName(it) { return sources(it)[0]?.name || ""; }
+
+function haystack(it) {
+  if (!it._hay) {
+    it._hay = sources(it)
+      .map(s => `${s.name || ""} ${s.description || ""}`)
+      .join(" ")
+      .toLowerCase();
+  }
+  return it._hay;
+}
+
+function card(it) {
+  const size = it.width ? `${it.width}×${it.height}` : "尺寸未知";
+  const tags = (it.tags || []).map(t => `<span data-tag="${esc(t)}">${esc(t)}</span>`).join("");
+  const srcs = sources(it);
+  const title = srcs[0]?.name || "(無名稱)";
+
+  const block = (s, i) => {
+    const label = esc(s.name || "(無名稱)");
+    const link = s.page_url
+      ? `<a href="${esc(s.page_url)}" target="_blank" rel="noreferrer">${label}</a>`
+      : label;
+    return i === 0
+      ? `<div class="name">${link}</div>`
+      : `<div class="alt"><div class="name alias">${link}</div></div>`;
+  };
+
+  return `<article class="card">
+    <div class="thumb"><img loading="lazy" src="${esc(it.image_url)}" alt="${esc(title)}"></div>
+    <div class="meta">${block(srcs[0],0)}<div class="sub">${esc(size)}</div><div class="cardtags">${tags}</div></div>
+  </article>`;
+}
+
+function esc(s) { return (s || "").toString().replace(/[&"'<>]/g, c => ({'&':'&amp;','"':'&quot;',"'":"&#39;",'<':'&lt;','>':'&gt;'})[c]); }
+
+document.getElementById("more").addEventListener("click", more);
+document.getElementById("q").addEventListener("input", () => apply());
+document.getElementById("sort").addEventListener("change", () => apply());
+document.getElementById("mode").addEventListener("change", () => apply());
+
+</script>
+</body>
+</html>

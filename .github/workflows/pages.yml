@@ -1,0 +1,59 @@
+name: pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "storyset/viewer.html"
+      - "storyset/cli.py"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: 'true'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Generate viewer and data from repo DB
+        run: |
+          if [ ! -f sqlite.db ]; then
+            echo "::error::repo 裡沒有 sqlite.db，請先讓 crawl workflow跑過一次"
+            exit 1
+          fi
+          mkdir -p data
+          python -m storyset export -d sqlite.db --out-json data/images.json --out-html data/index.html --embed
+          ls -lh data
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: data
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    env:
+      ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: 'true'
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

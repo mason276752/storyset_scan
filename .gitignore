@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# macOS / ExFAT sidecar
+.DS_Store
+._*
+
+# 本地暫存
+*.db-wal
+*.db-shm
+data/*.log
+
+# 測試用的假站台（用 tests/make_fixtures.py 重新產生）
+tests/fixtures/
