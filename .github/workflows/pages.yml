@@ -1,11 +1,16 @@
 name: pages
 
+# 用途：不重爬，只用 repo 裡現有的 data/images.db 重新產生看圖頁並部署。
+# 每天的爬取結束後也會自動部署一次（見 crawl.yml），這裡是給「改了頁面樣式
+# 或想立刻重新發布」時用的。
 on:
   push:
     branches: [main]
     paths:
-      - "storyset/viewer.html"
-      - "storyset/cli.py"
+      # 只在頁面模板或部署設定變動時觸發；資料更新由 crawl.yml 自己部署，
+      # 免得同一批資料被部署兩次
+      - "scraper/viewer.html"
+      - "scraper/cli.py"
       - ".github/workflows/pages.yml"
   workflow_dispatch:
 
@@ -14,43 +19,44 @@ permissions:
   pages: write
   id-token: write
 
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: ubuntu-latest
-    env:
-      ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: 'true'
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.12"
           cache: pip
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+      - name: 安裝依賴
+        run: pip install -r requirements.txt
 
-      - name: Generate viewer and data from repo DB
+      - name: 產生看圖頁與資料檔
         run: |
-          if [ ! -f sqlite.db ]; then
-            echo "::error::repo 裡沒有 sqlite.db，請先讓 crawl workflow跑過一次"
+          if [ ! -f data/images.db ]; then
+            echo "::error::repo 裡沒有 data/images.db，請先讓 crawl workflow 跑過一次"
             exit 1
           fi
-          mkdir -p data
-          python -m storyset export -d sqlite.db --out-json data/images.json --out-html data/index.html --embed
-          ls -lh data
+          mkdir -p site
+          python -m scraper export -d data/images.db --format json --out site/images.json
+          python -m scraper export -d data/images.db --format csv  --out site/images.csv
+          python -m scraper viewer -d data/images.db --out site/index.html
+          python -m scraper stats  -d data/images.db
+          ls -lh site/
 
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: data
+          path: site
 
   deploy:
     needs: build
     runs-on: ubuntu-latest
-    env:
-      ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: 'true'
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

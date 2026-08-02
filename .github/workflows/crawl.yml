@@ -2,93 +2,163 @@ name: crawl
 
 on:
   schedule:
-    - cron: '0 2 * * *' # daily at 02:00 UTC
+    # 每天台北 02:00 ＝ UTC 18:00
+    - cron: "0 18 * * *"
   workflow_dispatch:
     inputs:
-      max_pages:
-        description: 'Max pages to crawl (0 = unlimited)'
-        required: false
-        default: '0'
-      limit:
-        description: 'Max images to save (0 = unlimited)'
-        required: false
-        default: '0'
+      config:
+        description: "站台設定檔"
+        default: config/storyset.yaml
+      max_runtime:
+        description: "本次最多跑幾秒"
+        default: "18000"
       extra_args:
-        description: 'Extra args passed to the crawler'
-        required: false
-        default: ''
+        description: "額外參數（例如 --restart）"
+        default: ""
 
 permissions:
   contents: write
-  pages: write
-  id-token: write
+  actions: read
+  pages: write        # 部署 GitHub Pages
+  id-token: write     # Pages 部署用的 OIDC
 
 jobs:
-  crawl:
+  # 已經有一個 run 在跑就直接跳過這次（不排隊、不重複執行）
+  guard:
     runs-on: ubuntu-latest
+    outputs:
+      skip: ${{ steps.check.outputs.skip }}
+    steps:
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # 只算「比自己早開始」的 run，避免兩個同時啟動時互相讓路
+          earlier=$(gh run list \
+            --repo "$GITHUB_REPOSITORY" \
+            --workflow crawl.yml \
+            --status in_progress \
+            --json databaseId \
+            --jq "[.[].databaseId] | map(select(. < ${{ github.run_id }})) | length")
+          if [ "$earlier" -gt 0 ]; then
+            echo "已有 $earlier 個執行中的 run，跳過這次"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  crawl:
+    needs: guard
+    if: needs.guard.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    # GitHub 的 job 上限是 6 小時，留時間給收尾
     timeout-minutes: 340
-    env:
-      ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: 'true'
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          persist-credentials: true
 
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.12"
           cache: pip
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+      - name: 安裝依賴
+        run: pip install -r requirements.txt
 
-      - name: Run crawler
-        env:
-          MAX_PAGES: ${{ github.event.inputs.max_pages }}
-          LIMIT: ${{ github.event.inputs.limit }}
+      - name: 爬取
         run: |
-          python -m storyset run -d sqlite.db --max-pages ${MAX_PAGES:-0} --limit ${LIMIT:-0} ${{ github.event.inputs.extra_args }}
+          python -m scraper crawl \
+            -c "${{ github.event.inputs.config || 'config/storyset.yaml' }}" \
+            -d data/images.db \
+            --max-runtime "${{ github.event.inputs.max_runtime || '18000' }}" \
+            --log-file data/crawl.log \
+            ${{ github.event.inputs.extra_args }}
 
-      - name: Run export
+      # 以下步驟在爬取失敗時仍要執行（保住已抓到的資料），
+      # 但手動取消時一律不執行 —— 該次結果整批丟棄。
+      - name: 重試先前失敗的分頁
+        if: ${{ !cancelled() }}
         run: |
-          python -m storyset export -d sqlite.db --out-json data/images.json --out-html data/index.html
+          python -m scraper retry \
+            -c "${{ github.event.inputs.config || 'config/storyset.yaml' }}" \
+            -d data/images.db \
+            --max-runtime 600 \
+            --log-file data/crawl.log
 
-      - name: Upload pages artifact
+      # 量測當下被 429 擋掉的圖會缺尺寸，沒有其他流程會回頭處理它們
+      - name: 補量缺尺寸的圖片
+        if: ${{ !cancelled() }}
+        run: |
+          python -m scraper remeasure \
+            -c "${{ github.event.inputs.config || 'config/storyset.yaml' }}" \
+            -d data/images.db \
+            --max-runtime 600 \
+            --log-file data/crawl.log
+
+      - name: 匯出 CSV / JSON 與看圖頁
+        if: ${{ !cancelled() }}
+        run: |
+          python -m scraper export -d data/images.db --format json --out data/images.json
+          python -m scraper export -d data/images.db --format csv  --out data/images.csv
+          python -m scraper viewer -d data/images.db --out data/index.html
+          ls -lh data/
+
+      - name: 統計
+        if: ${{ !cancelled() }}
+        run: python -m scraper stats -d data/images.db
+
+      # Pages 只放看圖需要的檔案，不上傳資料庫與 log
+      - name: 準備 Pages 內容
+        if: ${{ !cancelled() }}
+        run: |
+          mkdir -p site
+          cp data/index.html  site/index.html
+          cp data/images.json site/images.json
+          cp data/images.csv  site/images.csv
+          ls -lh site/
+
+      - name: 上傳 Pages artifact
+        if: ${{ !cancelled() }}
         uses: actions/upload-pages-artifact@v3
         with:
-          path: data
+          path: site
 
-      - name: Commit generated data and DB
-        env:
-          GIT_AUTHOR_NAME: github-actions[bot]
-          GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+      - name: 上傳 log
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: crawl-log-${{ github.run_number }}
+          path: data/crawl.log
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: 把資料庫存回 repo
+        if: ${{ !cancelled() }}
         run: |
-          if [ ! -f data/images.json ]; then
-            echo "No generated files to commit"
+          if [ ! -f data/images.db ]; then
+            echo "沒有資料庫可提交（爬取可能在建立前就失敗了）"
             exit 0
           fi
-          git config user.name "$GIT_AUTHOR_NAME"
-          git config user.email "$GIT_AUTHOR_EMAIL"
-          git add -f data/images.json data/index.html data/images.csv sqlite.db || true
-          if git diff --staged --quiet; then
-            echo "No changes to commit"
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f data/images.db data/images.json data/images.csv data/index.html
+          if git diff --cached --quiet; then
+            echo "資料庫沒有變化，不提交"
           else
-            git commit -m "chore(data): 更新爬取結果（run #${{ github.run_number }})"
+            git commit -m "chore(data): 更新爬取結果（run #${{ github.run_number }}）"
             git pull --rebase --autostash
             git push
           fi
 
+  # 把看圖頁發布到 GitHub Pages
   deploy-pages:
     needs: crawl
+    if: ${{ !cancelled() && needs.crawl.result != 'skipped' }}
     runs-on: ubuntu-latest
-    env:
-      ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: 'true'
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
+    # 同時只允許一個部署
     concurrency:
       group: pages
       cancel-in-progress: false

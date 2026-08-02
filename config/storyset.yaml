@@ -1,0 +1,26 @@
+# Storyset（https://storyset.com）—— FreeingVectors / Freepik 的 JSON API
+# 資料來源：https://stories.freepiklabs.com/api/vectors?page=N
+# 一頁就把每張圖的全部欄位帶齊（src / url / illustration.name / tags / published_at），
+# 沒有「詳細頁」這層；分頁靠回應裡的 links.next。
+name: storyset
+
+start_urls:
+  - "https://stories.freepiklabs.com/api/vectors?page=1"
+
+allowed_domains:
+  - stories.freepiklabs.com        # JSON API 與 SVG 儲存位於此 host
+  - storyset.com                   # item.url 指向的展示頁
+
+# JSON 不帶 width/height，SVG 得實際下載解析（PIL 不支援 SVG）
+measure_size: always
+
+politeness:
+  delay: 2.0                       # JSON 分頁：序列，每頁之間至少間隔 2 秒
+  jitter: 1.0                      # 再加 0~1 秒隨機抖動
+  image_concurrency: 10            # SVG 量測可並行；同時最多 10 張
+  image_delay: 0                   # SVG 請求之間的最小間隔（0 = 只靠並行數限制）
+  timeout: 20
+  retries: 3
+  backoff: 2.0                     # 5xx 的退避倍數
+  too_many_requests_wait: 60       # 被 429 擋下就整條通道暫停這麼久（含並行中的 SVG）
+  respect_robots: false

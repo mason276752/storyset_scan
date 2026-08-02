@@ -13,5 +13,5 @@ venv/
 *.db-shm
 data/*.log
 
-# 測試用的假站台（用 tests/make_fixtures.py 重新產生）
-tests/fixtures/
+# Pages 部署的中繼目錄（artifact 內容，不進 repo）
+site/

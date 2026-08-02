@@ -59,6 +59,7 @@
   .name a { color: inherit; text-decoration: none; }
   .name a:hover { color: var(--accent); }
   .desc { font-size: 11.5px; color: var(--muted); line-height: 1.45; margin-bottom: 6px; }
+  /* 同一張圖在別篇文章的另一組名稱＋說明 */
   .alt { border-top: 1px dashed var(--line); margin-top: 6px; padding-top: 6px; }
   .name.alias { font-weight: 500; }
   .sub { font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
@@ -120,6 +121,7 @@ function fail(msg) {
   $("app").innerHTML = msg;
 }
 
+// 優先讀同目錄的 images.json；用 file:// 直接開啟時瀏覽器會擋，改用手動選檔
 if (window.__IMAGES__) {
   boot(window.__IMAGES__);
 } else {
@@ -165,6 +167,7 @@ function apply() {
   const mode = $("mode").value;
   view = all.filter(it => {
     if (q) {
+      // 一張圖可能有多個名稱與說明（出現在不同文章），全部納入搜尋
       if (!haystack(it).includes(q)) return false;
     }
     if (active.size) {
@@ -197,9 +200,11 @@ function more() {
   $("more").textContent = `載入更多（還有 ${view.length - shown} 張）`;
 }
 
+// 名稱、說明、來源頁是一組的（同一篇文章給的），所以一律以 sources 為單位處理。
+// 舊格式的 images.json（單值欄位）也能開。
 function sources(it) {
   if (it.sources && it.sources.length) return it.sources;
-  return [{ page_url: it.page_url, name: it.name }];
+  return [{ page_url: it.page_url, name: it.name, description: it.description }];
 }
 function firstName(it) { return sources(it)[0]?.name || ""; }
 
@@ -219,29 +224,42 @@ function card(it) {
   const srcs = sources(it);
   const title = srcs[0]?.name || "(無名稱)";
 
+  // 每個來源頁的名稱與說明成對呈現；第一組當標題，其餘列在下面
   const block = (s, i) => {
     const label = esc(s.name || "(無名稱)");
     const link = s.page_url
       ? `<a href="${esc(s.page_url)}" target="_blank" rel="noreferrer">${label}</a>`
       : label;
+    const desc = s.description ? `<div class="desc">${esc(s.description)}</div>` : "";
     return i === 0
-      ? `<div class="name">${link}</div>`
-      : `<div class="alt"><div class="name alias">${link}</div></div>`;
+      ? `<div class="name">${link}</div>${desc}`
+      : `<div class="alt"><div class="name alias">${link}</div>${desc}</div>`;
   };
 
   return `<article class="card">
     <div class="thumb"><img loading="lazy" src="${esc(it.image_url)}" alt="${esc(title)}"></div>
-    <div class="meta">${block(srcs[0],0)}<div class="sub">${esc(size)}</div><div class="cardtags">${tags}</div></div>
+    <div class="meta">
+      ${srcs.map(block).join("")}
+      <div class="sub">${size} · ${esc(it.published_at || "日期未知")}${
+        srcs.length > 1 ? ` · 出現在 ${srcs.length} 篇` : ""}</div>
+      <div class="cardtags">${tags}</div>
+    </div>
   </article>`;
 }
 
-function esc(s) { return (s || "").toString().replace(/[&"'<>]/g, c => ({'&':'&amp;','"':'&quot;',"'":"&#39;",'<':'&lt;','>':'&gt;'})[c]); }
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"']/g, c =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
 
-document.getElementById("more").addEventListener("click", more);
-document.getElementById("q").addEventListener("input", () => apply());
-document.getElementById("sort").addEventListener("change", () => apply());
-document.getElementById("mode").addEventListener("change", () => apply());
-
+$("q").oninput = apply;
+$("sort").onchange = apply;
+$("mode").onchange = apply;
+$("more").onclick = more;
+$("grid").onclick = e => {
+  const t = e.target.closest(".cardtags span");
+  if (t) toggleTag(t.dataset.tag);
+};
 </script>
 </body>
 </html>
